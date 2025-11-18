@@ -1,6 +1,10 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
+import smtplib
+from email.message import EmailMessage
 
 app = FastAPI()
 
@@ -63,6 +67,57 @@ def test_database():
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
     
     return response
+
+# --- Contact form email endpoint ---
+class ContactMessage(BaseModel):
+    name: str = Field(..., min_length=2, max_length=120)
+    email: EmailStr
+    message: str = Field(..., min_length=5, max_length=5000)
+    phone: Optional[str] = None
+
+@app.post("/contact")
+def send_contact_email(payload: ContactMessage):
+    """Send contact form submissions to a configured email via SMTP.
+    Environment variables required (if emailing is desired):
+    - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+    - TO_EMAIL (recipient)
+    If not configured, the message will be accepted and logged.
+    """
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    to_email = os.getenv("TO_EMAIL") or os.getenv("SMTP_TO")
+
+    # Compose email content
+    subject = f"Website Inquiry from {payload.name}"
+    body = (
+        f"Name: {payload.name}\n"
+        f"Email: {payload.email}\n"
+        f"Phone: {payload.phone or '-'}\n\n"
+        f"Message:\n{payload.message}\n"
+    )
+
+    # If SMTP not configured, just return accepted with flag
+    if not (smtp_host and smtp_user and smtp_pass and to_email):
+        # Log to server stdout
+        print("[CONTACT] Email not sent (SMTP not configured). Payload:", payload.model_dump())
+        return {"ok": True, "sent": False, "message": "Received. Email not sent (SMTP not configured)."}
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        msg.set_content(body)
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return {"ok": True, "sent": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)[:120]}")
 
 
 if __name__ == "__main__":
